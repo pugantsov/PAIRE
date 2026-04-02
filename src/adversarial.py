@@ -71,20 +71,6 @@ def _majority_vote(predictions: list[int]) -> int:
 def process_single_instance(args):
     """
     Process a single attack instance for one quantifier.
-
-    Parameters
-    ----------
-    args : tuple
-        (instance_idx, x_i, quantifier, q0, X_sigma_groups, background_sizes,
-         vote_budgets, max_vote_budget)
-
-    Returns
-    -------
-    tuple[int, list[tuple[int, int, int]]]
-        The instance index and a list of (n, b, pred) tuples where:
-        - n is the background size
-        - b is the number of repetitions used for majority vote
-        - pred is the inferred sensitive-attribute class index
     """
     (
         instance_idx,
@@ -117,23 +103,17 @@ def process_single_instance(args):
     return instance_idx, results
 
 
-class AdultAttackDataBuilder:
+class AttackDataBuilder:
     """
-    Prepare Adult attack instances and background pools for the differencing
+    Prepare attack instances and background pools for the differencing
     attack.
     """
 
     def __init__(
         self,
-        sensitive_col: str = "sex",
+        sensitive_col: str,
     ) -> None:
-        self.categorical_feature_cols = CATEGORICAL_FEATURE_COLS
-        self.numerical_feature_cols = NUMERICAL_FEATURE_COLS
         self.sensitive_col = sensitive_col
-
-    @property
-    def feature_cols(self) -> list[str]:
-        return self.categorical_feature_cols + self.numerical_feature_cols
 
     def prepare_attack_data(
         self,
@@ -144,16 +124,6 @@ class AdultAttackDataBuilder:
         vote_budgets: Sequence[int],
         base_seed: int = 0,
     ) -> tuple[pd.DataFrame, list[pd.DataFrame]]:
-        """
-        Create attack instances and one background pool per run.
-
-        Returns
-        -------
-        I_global : pd.DataFrame
-            Attack instances sampled stratified by the sensitive attribute.
-        sigma_runs : list[pd.DataFrame]
-            One background dataframe per run.
-        """
         df = test_df.copy()
         df["id"] = df.index
 
@@ -227,9 +197,47 @@ class AdultAttackPreprocessor:
         )
 
 
+class TRECAttackPreprocessor:
+    """
+    Transform TREC data using the saved train-fitted TF-IDF vectorizer and label
+    encoder.
+    """
+
+    def __init__(
+        self,
+        data_dir: Path | str,
+        preprocessor_suffix: str = "trec_train",
+    ):
+        self.data_dir = Path(data_dir)
+        if not self.data_dir.exists():
+            raise FileNotFoundError(
+                f"Data directory {self.data_dir} does not exist."
+            )
+
+        self.preprocessor_suffix = preprocessor_suffix
+        self.vectorizer = joblib.load(
+            self.data_dir / f"vectorizer_{self.preprocessor_suffix}.joblib"
+        )
+        self.label_encoder = joblib.load(
+            self.data_dir / f"label_encoder_{self.preprocessor_suffix}.joblib"
+        )
+
+    def transform_features(self, df: pd.DataFrame):
+        return self.vectorizer.transform(df["text"].astype(str).values)
+
+    def transform_labels(
+        self,
+        df: pd.DataFrame,
+        sensitive_col: str = "region",
+    ) -> np.ndarray:
+        return self.label_encoder.transform(
+            df[sensitive_col].astype(str).values
+        )
+
+
 class DifferencingAttackRunner:
     """
-    Run the Adult differencing attack against trained quantifiers.
+    Run the differencing attack against trained quantifiers.
     """
 
     def __init__(
@@ -237,8 +245,7 @@ class DifferencingAttackRunner:
         data_dir: Path | str,
         models_dir: Path | str,
         reports_dir: Path | str,
-        sensitive_col: str = "sex",
-        dataset_name: str = "adult",
+        dataset_name: str,
     ):
         self.data_dir = Path(data_dir)
         self.models_dir = Path(models_dir)
@@ -248,17 +255,33 @@ class DifferencingAttackRunner:
             for dir_ in [self.data_dir, self.models_dir, self.reports_dir]
         ):
             raise FileNotFoundError(f"Directory {missing} does not exist.")
-        self.sensitive_col = sensitive_col
-        self.dataset_name = dataset_name
 
-        self.preprocessor = AdultAttackPreprocessor(
-            self.data_dir, f"{self.dataset_name}_train"
-        )
+        self.dataset_name = dataset_name
+        if dataset_name == "adult":
+            self.sensitive_col = "sex"
+
+            self.preprocessor = AdultAttackPreprocessor(
+                self.data_dir, f"{self.dataset_name}_train"
+            )
+            self.data_builder = AttackDataBuilder(
+                self.sensitive_col,
+            )
+        elif dataset_name == "trec":
+            self.sensitive_col = "region"
+
+            self.preprocessor = TRECAttackPreprocessor(
+                self.data_dir, f"{self.dataset_name}_train"
+            )
+            self.data_builder = AttackDataBuilder(
+                self.sensitive_col,
+            )
+        else:
+            raise ValueError(f"Unsupported dataset: {dataset_name}")
 
     def _load_quantifier_paths(
         self,
         quantifiers: Sequence[str] | None = None,
-        model_suffix: str = "adult",
+        model_suffix: str | None = None,
     ) -> list[Path]:
         model_paths = sorted(self.models_dir.glob(f"*_{model_suffix}.pkl"))
 
@@ -304,7 +327,7 @@ class DifferencingAttackRunner:
         vote_budgets: Sequence[int],
         n_workers: int,
         quantifiers: Sequence[str] | None = None,
-        model_suffix: str = "adult",
+        model_suffix: str | None = None,
     ) -> pd.DataFrame:
         """
         Run the attack for one seed/background pool.
@@ -404,17 +427,10 @@ class DifferencingAttackRunner:
         base_seed: int = 0,
         n_workers: int = 1,
         quantifiers: Sequence[str] | None = None,
-        model_suffix: str = "adult",
+        model_suffix: str | None = None,
         save_individual_runs: bool = False,
     ) -> pd.DataFrame:
-        """
-        Run the full differencing attack over multiple seeds.
-        """
-        builder = AdultAttackDataBuilder(
-            sensitive_col=self.sensitive_col,
-        )
-
-        I_global, sigma_runs = builder.prepare_attack_data(
+        I_global, sigma_runs = self.data_builder.prepare_attack_data(
             test_df=test_df,
             n_attack_instances=n_attack_instances,
             n_runs=n_runs,
@@ -440,10 +456,6 @@ class DifferencingAttackRunner:
             all_runs.append(run_df)
 
             if save_individual_runs:
-                if self.reports_dir is None:
-                    raise ValueError(
-                        "reports_dir must be set to save individual runs."
-                    )
                 self.reports_dir.mkdir(parents=True, exist_ok=True)
                 with (
                     self.reports_dir

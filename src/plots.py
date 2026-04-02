@@ -15,7 +15,7 @@ DISPLAY_NAMES = {
 }
 
 
-def create_fairness_estimation_error_plot(
+def plot_fairness_estimation_error(
     results_df: pd.DataFrame,
     prevalence_col: str = "true-prev",
     error_col: str = "dd_e",
@@ -160,7 +160,9 @@ def create_fairness_estimation_error_plot(
     return fig, ax
 
 
-def summarize_adversarial_results(results_df: pd.DataFrame) -> pd.DataFrame:
+def summarize_adversarial_results(
+    results_df: pd.DataFrame,
+) -> pd.DataFrame:
     """
     Aggregate raw adversarial attack results across runs.
 
@@ -193,7 +195,7 @@ def summarize_adversarial_results(results_df: pd.DataFrame) -> pd.DataFrame:
     return summary
 
 
-def create_adversarial_attack_plot(
+def plot_adversarial_attack(
     results_df: pd.DataFrame,
     quantifier_order: list[str] | None = None,
     n_order: list[int] | None = None,
