@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import warnings
 from pathlib import Path
 
 import pandas as pd
@@ -10,6 +11,8 @@ from src.models import (
     TRECPreprocessor,
     QuantifierTrainer,
 )
+
+warnings.filterwarnings("ignore", message=r".*'where' used without 'out'.*")
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,47 +26,19 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Dataset to use.",
     )
-    parser.add_argument(
-        "--data-dir",
-        type=Path,
-        default=None,
-        help="Directory containing the dataset files and saved preprocessing artefacts.",
-    )
-    parser.add_argument(
-        "--models-dir",
-        type=Path,
-        default=None,
-        help="Directory where trained quantifiers will be saved.",
-    )
-    parser.add_argument(
-        "--train-file",
-        type=str,
-        default=None,
-        help="Training filename inside --data-dir. Defaults depend on --dataset.",
-    )
-    parser.add_argument(
-        "--params-file",
-        type=Path,
-        default=None,
-        help="Path to the JSON file where tuned parameters will be saved.",
-    )
     return parser.parse_args()
 
 
-def get_train_file(dataset: str, train_file: str | None) -> str:
-    if train_file is not None:
-        return train_file
-    return {
-        "adult": "adult_train.csv",
-        "trec": "trec_train.jsonl",
-    }[dataset]
-
-
-def load_training_data(dataset: str, train_path: Path) -> pd.DataFrame:
+def load_training_data(dataset: str, data_dir: Path) -> pd.DataFrame:
     if dataset == "adult":
-        return pd.read_csv(train_path)
+        return pd.concat(
+            [
+                pd.read_csv(data_dir / train_path)
+                for train_path in ["adult_D1.csv", "adult_D2.csv"]
+            ]
+        )
     if dataset == "trec":
-        return pd.read_json(train_path, lines=True)
+        return pd.read_json(data_dir / "trec_train.jsonl", lines=True)
     raise ValueError(f"Unsupported dataset: {dataset}")
 
 
@@ -75,23 +50,36 @@ def build_preprocessor(dataset: str):
     raise ValueError(f"Unsupported dataset: {dataset}")
 
 
+def create_dirs(project_root: Path) -> dict[str, Path]:
+    dirs = {}
+    for subfolder in ["data", "models", "reports"]:
+        (project_root / subfolder).mkdir(parents=True, exist_ok=True)
+        dirs[subfolder] = project_root / subfolder
+    return dirs
+
+
 def main() -> None:
     args = parse_args()
 
-    train_file = get_train_file(args.dataset, args.train_file)
-    train = load_training_data(args.dataset, args.data_dir / train_file)
+    project_root = Path(__file__).resolve().parents[1]
+    dirs = create_dirs(project_root)
+
+    train = load_training_data(args.dataset, dirs["data"])
 
     preprocessor = build_preprocessor(args.dataset)
-    trainer = QuantifierTrainer()
+    trainer = QuantifierTrainer(quantifiers=["CC"])
 
-    params = trainer.load_parameters(args.params_file)
+    params = trainer.load_parameters(
+        dirs["models"] / f"params_{args.dataset}.json"
+    )
     trainer.train_and_save(
         train_df=train,
         params=params,
         preprocessor=preprocessor,
-        data_dir=args.data_dir,
-        model_dir=args.models_dir,
+        data_dir=dirs["data"],
+        model_dir=dirs["models"],
         model_suffix=args.dataset,
+        save_preprocessor=True,
     )
 
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import warnings
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -16,8 +15,6 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from tqdm.auto import tqdm
 
 import src.utils as utils
-
-warnings.filterwarnings("ignore", message=r".*'where' used without 'out'.*")
 
 DEFAULT_QUANTIFIERS = ["CC", "PCC", "PACC", "EMQ", "KDEyML"]
 
@@ -45,6 +42,7 @@ class AdultPreprocessor:
     def __init__(self):
         self.categorical_feature_cols = self.CATEGORICAL_FEATURE_COLS
         self.numerical_feature_cols = self.NUMERICAL_FEATURE_COLS
+        self.target_col = "sex"
         self.ohe = OneHotEncoder(
             handle_unknown="ignore", sparse_output=False, dtype=float
         )
@@ -152,9 +150,6 @@ class TRECPreprocessor:
     Preprocessing pipeline for the TREC dataset used in the paper.
     """
 
-    TEXT_COL = "text"
-    TARGET_COL = "region"
-
     def __init__(
         self,
         max_features: int = 10000,
@@ -162,8 +157,8 @@ class TRECPreprocessor:
         lowercase: bool = True,
         stop_words: str | None = "english",
     ):
-        self.text_col = self.TEXT_COL
-        self.target_col = self.TARGET_COL
+        self.feature_col = "text"
+        self.target_col = "region"
         self.vectorizer = TfidfVectorizer(
             lowercase=lowercase,
             stop_words=stop_words,
@@ -175,12 +170,12 @@ class TRECPreprocessor:
 
     def fit_transform_dataframe(self, df: pd.DataFrame):
         return self.vectorizer.fit_transform(
-            df[self.text_col].astype(str).to_numpy()
+            df[self.feature_col].astype(str).to_numpy()
         )
 
     def transform_dataframe(self, df: pd.DataFrame):
         return self.vectorizer.transform(
-            df[self.text_col].astype(str).to_numpy()
+            df[self.feature_col].astype(str).to_numpy()
         )
 
     def fit_label_encoder(
@@ -205,7 +200,7 @@ class TRECPreprocessor:
         random_state: int = 0,
     ) -> tuple[qp.data.LabelledCollection, qp.data.LabelledCollection]:
         dataset = qp.data.LabelledCollection(
-            train_df[self.text_col].astype(str).to_numpy(),
+            train_df[self.feature_col].astype(str).to_numpy(),
             train_df[self.target_col].tolist(),
         )
         d1, d2 = dataset.split_stratified(
@@ -298,6 +293,10 @@ class QuantifierHyperparameterTuner:
         else:
             self.protocol_config = self.TREC_PROTOCOL_CONFIG
 
+        self.protocol = (
+            qp.protocol.APP if dataset == "adult" else qp.protocol.NPP
+        )
+
     def _build_param_grid(self, qid: str) -> dict[str, Any]:
         if qid.startswith("KDEy"):
             return self.classifier_grid | {
@@ -310,14 +309,13 @@ class QuantifierHyperparameterTuner:
         self,
         train_df: pd.DataFrame,
         preprocessor: AdultPreprocessor | TRECPreprocessor,
-        protocol: qp.protocol.APP | qp.protocol.NPP,
     ) -> dict[str, dict[str, Any]]:
         d1, d2 = preprocessor.prepare_tuning_collections(
             train_df, random_state=self.random_state
         )
 
         qp.environ["SAMPLE_SIZE"] = len(d2)
-        protocol = protocol(d2, **self.protocol_config)
+        protocol = self.protocol(d2, **self.protocol_config)
 
         best_parameters: dict[str, dict[str, Any]] = {}
 
@@ -388,6 +386,7 @@ class QuantifierTrainer:
         data_dir: Path | str,
         model_dir: Path | str,
         model_suffix: str,
+        save_preprocessor: bool = True,
     ) -> None:
         data_dir = Path(data_dir)
         if not data_dir.exists():
@@ -398,7 +397,10 @@ class QuantifierTrainer:
         model_dir.mkdir(parents=True, exist_ok=True)
 
         dataset = preprocessor.prepare_training_collection(train_df)
-        preprocessor.save(data_dir, suffix=f"{model_suffix}_train")
+        if save_preprocessor:
+            preprocessor.save(data_dir, suffix=f"{model_suffix}_train")
+
+        params = {qid: params[qid] for qid in self.quantifiers}
 
         for qid, q_params in (loop := tqdm(params.items())):
             loop.set_description(qid)

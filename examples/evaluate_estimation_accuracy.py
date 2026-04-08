@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import warnings
 from pathlib import Path
+
+warnings.filterwarnings("ignore", message=r".*'where' used without 'out'.*")
 
 import pandas as pd
 
@@ -21,42 +24,6 @@ def parse_args() -> argparse.Namespace:
         help="Dataset to evaluate.",
     )
     parser.add_argument(
-        "--data-dir",
-        type=Path,
-        default=None,
-        help="Directory containing the dataset files and saved preprocessing artefacts.",
-    )
-    parser.add_argument(
-        "--models-dir",
-        type=Path,
-        default=None,
-        help="Directory containing trained quantifier models.",
-    )
-    parser.add_argument(
-        "--reports-dir",
-        type=Path,
-        default=None,
-        help="Directory where per-model evaluation reports will be saved.",
-    )
-    parser.add_argument(
-        "--test-file",
-        type=str,
-        default=None,
-        help="Adult test CSV filename inside --data-dir. Ignored for TREC unless query pattern usage downstream is overridden.",
-    )
-    parser.add_argument(
-        "--queries-pattern",
-        type=str,
-        default="trec_test_query_*.jsonl",
-        help="Glob pattern for TREC query files inside --data-dir.",
-    )
-    parser.add_argument(
-        "--preprocessor-suffix",
-        type=str,
-        default=None,
-        help="Filename suffix used for saved preprocessors.",
-    )
-    parser.add_argument(
         "--n-workers",
         type=int,
         default=1,
@@ -68,41 +35,46 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
+    project_root = Path(__file__).resolve().parents[1]
+    dirs = {
+        folder: project_root / folder
+        for folder in ["data", "models", "reports"]
+    }
+
     evaluator = QuantifierEvaluator(
-        data_dir=args.data_dir,
+        data_dir=dirs["data"],
         dataset=args.dataset,
         model_suffix=args.dataset,
     )
 
     if args.dataset == "adult":
-        test_file = args.test_file or "adult_test.csv"
-        test = pd.read_csv(args.data_dir / test_file)
+        test = pd.read_csv(dirs["data"] / "adult_D3.csv")
 
         evaluator.evaluate_models(
             test_df=test,
-            models_dir=args.models_dir,
-            reports_dir=args.reports_dir,
-            preprocessor_suffix=args.preprocessor_suffix or "adult_train",
+            models_dir=dirs["models"],
+            reports_dir=dirs["reports"],
+            preprocessor_suffix="adult_train",
         )
 
     else:
         evaluator.evaluate_models(
-            models_dir=args.models_dir,
-            reports_dir=args.reports_dir,
-            preprocessor_suffix=args.preprocessor_suffix or "trec_train",
+            models_dir=dirs["models"],
+            reports_dir=dirs["reports"],
+            preprocessor_suffix="trec_train",
             n_workers=args.n_workers,
-            queries_pattern=args.queries_pattern,
+            queries_pattern="trec_test_query_*.jsonl",
         )
 
     reports = evaluator.load_reports(
-        args.reports_dir,
+        dirs["reports"],
         model_suffix=args.dataset,
     )
     reports = evaluator.filter_non_degenerate_prevalences(reports)
 
     summary = evaluator.generate_summary_table(
         reports,
-        model_order=DEFAULT_QUANTIFIERS,
+        model_order=DEFAULT_QUANTIFIERS[:1],
         metrics=["ae", "rae"],
     )
     print(summary)

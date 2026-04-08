@@ -6,27 +6,18 @@ from pathlib import Path
 from src.data import AdultDatasetLoader
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Fetch dataset and materialise the indexed CSV splits."
-    )
-
-    project_root = Path(__file__).resolve().parents[1]
-    default_data_dir = project_root / "data"
-
-    parser.add_argument(
-        "--data-dir",
-        type=Path,
-        default=default_data_dir,
-        help="Directory containing the dataset files.",
-    )
-    return parser.parse_args()
+def create_dirs(project_root: Path) -> dict[str, Path]:
+    dirs = {}
+    for subfolder in ["data", "models", "reports"]:
+        (project_root / subfolder).mkdir(parents=True, exist_ok=True)
+        dirs[subfolder] = project_root / subfolder
+    return dirs
 
 
 def main() -> None:
-    args = parse_args()
-
-    loader = AdultDatasetLoader(data_dir=args.data_dir)
+    project_root = Path(__file__).resolve().parents[1]
+    dirs = create_dirs(project_root)
+    loader = AdultDatasetLoader(data_dir=dirs["data"])
     loader.write_split_csvs()
 
 

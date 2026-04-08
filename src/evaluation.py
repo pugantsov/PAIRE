@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import warnings
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
@@ -20,13 +19,12 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler, LabelEncoder
 from sklearn.feature_extraction.text import TfidfVectorizer
 from tqdm.auto import tqdm
 from whoosh.fields import ID, TEXT, Schema
-from whoosh.index import create_in, open_dir
+from whoosh.index import create_in, open_dir, exists_in
 from whoosh.qparser import OrGroup, QueryParser
 from whoosh.scoring import BM25F
 
-from src.models import DEFAULT_QUANTIFIERS, get_quantifier_class
-
-warnings.filterwarnings("ignore", message=r".*'where' used without 'out'.*")
+import src.utils as utils
+from src.models import DEFAULT_QUANTIFIERS
 
 CATEGORICAL_FEATURE_COLS = [
     "workclass",
@@ -105,10 +103,7 @@ class QuantifierEvaluator:
         label_encoder = joblib.load(
             self.data_dir / f"label_encoder_{suffix}.joblib"
         )
-        labels = np.load(
-            self.data_dir / f"labels_{suffix}.npy", allow_pickle=True
-        )
-        return vectorizer, label_encoder, labels
+        return vectorizer, label_encoder
 
     def transform_adult_test_dataframe(
         self,
@@ -246,6 +241,8 @@ class QuantifierEvaluator:
         with output_path.open("wb") as f:
             pickle.dump(report, f)
 
+        return output_path, None
+
     def evaluate_trec_models(
         self,
         models_dir: Path | str,
@@ -265,7 +262,7 @@ class QuantifierEvaluator:
         reports_dir = Path(reports_dir)
         reports_dir.mkdir(parents=True, exist_ok=True)
 
-        vectorizer, _, labels = self.load_trec_preprocessors(
+        vectorizer, label_encoder = self.load_trec_preprocessors(
             suffix=preprocessor_suffix
         )
 
@@ -294,7 +291,7 @@ class QuantifierEvaluator:
                         query_path=query_path,
                         model_path=model_path,
                         qid=qid,
-                        labels=labels,
+                        labels=label_encoder.classes_,
                         vectorizer=vectorizer,
                         reports_dir=reports_dir,
                         text_col=text_col,
@@ -307,7 +304,7 @@ class QuantifierEvaluator:
                     self._process_single_trec_query,
                     model_path=model_path,
                     qid=qid,
-                    labels=labels,
+                    labels=label_encoder.classes_,
                     vectorizer=vectorizer,
                     reports_dir=reports_dir,
                     text_col=text_col,
@@ -639,7 +636,7 @@ class AdultFairnessEvaluator:
 
         for qid in (loop := tqdm(self.quantifiers)):
             loop.set_description(qid)
-            q_class = get_quantifier_class(qid)
+            q_class = utils.get_quantifier_class(qid)
 
             def build_sensitive_classifier():
                 return LogisticRegression(
@@ -897,14 +894,20 @@ class TRECFairnessCorpusBuilder:
     ) -> pd.DataFrame:
         return pd.concat(rel_docs + [nonrel_corpus], ignore_index=True)
 
-    def build_bm25_ranked_lists(
+    def build_bm25_index(
         self,
         docs: pd.DataFrame,
-        queries: pd.DataFrame,
         index_dir: Path | str,
-    ) -> dict[str, list[tuple[int, str]]]:
+        overwrite: bool = False,
+    ) -> None:
         index_dir = Path(index_dir)
         index_dir.mkdir(parents=True, exist_ok=True)
+
+        if exists_in(str(index_dir)) and not overwrite:
+            raise FileExistsError(
+                f"A Whoosh index already exists in {index_dir}. "
+                "Pass overwrite=True to replace it."
+            )
 
         schema = Schema(
             doc_id=ID(stored=True, unique=True),
@@ -918,14 +921,29 @@ class TRECFairnessCorpusBuilder:
         for row in tqdm(
             docs.itertuples(index=False),
             total=len(docs),
-            desc="Indexing documents",
+            desc="Indexing BM25 corpus",
         ):
             writer.add_document(
                 doc_id=str(row.id),
                 content=row.text,
                 region=str(row.region),
             )
+
+        print("Committing index (this may take a while)...")
         writer.commit()
+        print("Index committed.")
+
+    @staticmethod
+    def rank_bm25_index(
+        queries: pd.DataFrame, index_dir: Path | str, limit: int = 10000
+    ) -> dict[str, list[tuple[int, str]]]:
+        index_dir = Path(index_dir)
+
+        if not exists_in(str(index_dir)):
+            raise FileNotFoundError(
+                f"BM25 index not found in {index_dir}. "
+                "Run --build-corpus to create it."
+            )
 
         ix = open_dir(str(index_dir))
         searcher = ix.searcher(weighting=BM25F(B=0.75, K1=1.2))
@@ -977,6 +995,34 @@ class TRECFairnessEvaluator:
         self.cutoffs = cutoffs or self.DEFAULT_CUTOFFS
         self.eps = eps
 
+    def _train_fairness_models(
+        self,
+        data_dir: Path,
+        vectorizer: TfidfVectorizer,
+        models_dir: Path,
+        model_prefix: str = "trec_fair",
+        text_col: str = "text",
+        target_col: str = "region",
+    ) -> None:
+        models_dir.mkdir(parents=True, exist_ok=True)
+
+        train_df = pd.read_json(data_dir / "trec_train.jsonl", lines=True)
+        builder = TRECFairnessCorpusBuilder()
+        fair_train, _ = builder.build_train_nonrelevant_split(train_df)
+
+        X = vectorizer.transform(fair_train[text_col].astype(str).to_numpy())
+        y = fair_train[target_col].values
+
+        for qid in tqdm(
+            self.quantifiers, desc="Training fairness quantifiers"
+        ):
+            q_class = utils.get_quantifier_class(qid)
+            q = q_class(LogisticRegression())
+            q.fit(X, y)
+
+            with (models_dir / f"{model_prefix}_{qid}.pkl").open("wb") as f:
+                pickle.dump(q, f)
+
     def compute_local_target_distributions(
         self,
         docs: pd.DataFrame,
@@ -1003,7 +1049,7 @@ class TRECFairnessEvaluator:
             p_star = (p_star + self.eps) / (
                 p_star.sum() + self.eps * len(labels)
             )
-            target_distributions[str(query_id)] = p_star
+            target_distributions[int(query_id)] = p_star
 
         return target_distributions
 
@@ -1013,12 +1059,27 @@ class TRECFairnessEvaluator:
         docs: pd.DataFrame,
         vectorizer: TfidfVectorizer,
         models_dir: Path | str,
+        data_dir: Path | str,
         labels: np.ndarray,
         experiment_name: str = "BM25",
-        model_pattern: str = "trec_fair_*.pkl",
+        model_prefix: str = "trec_fair",
     ) -> pd.DataFrame:
         models_dir = Path(models_dir)
+        data_dir = Path(data_dir)
         labels_map = {lbl: i for i, lbl in enumerate(labels)}
+
+        model_paths = {
+            qid: models_dir / f"{model_prefix}_{qid}.pkl"
+            for qid in self.quantifiers
+        }
+        missing = [qid for qid, p in model_paths.items() if not p.exists()]
+        if missing:
+            self._train_fairness_models(
+                data_dir=data_dir,
+                vectorizer=vectorizer,
+                models_dir=models_dir,
+                model_prefix=model_prefix,
+            )
 
         id_to_text = {
             int(row.id): row.text for row in docs.itertuples(index=False)
@@ -1028,22 +1089,20 @@ class TRECFairnessEvaluator:
         )
 
         rows = []
-        model_paths = sorted(models_dir.glob(model_pattern))
 
-        for q_path in (
-            q_loop := tqdm(model_paths, desc="Fairness quantifiers")
+        for qid, q_path in (
+            q_loop := tqdm(model_paths.items(), desc="Fairness quantifiers")
         ):
-            qid = q_path.stem.split("_")[-1]
-            qid = {"CC": "TE", "PCC": "WE"}.get(qid, qid)
-            q_loop.set_description(f"({qid})")
-
             with q_path.open("rb") as f:
                 q = pickle.load(f)
+
+            display_qid = {"CC": "TE", "PCC": "WE"}.get(qid, qid)
+            q_loop.set_description(f"({display_qid})")
 
             for query_id, ranked_list in tqdm(
                 ranked_lists.items(), leave=False
             ):
-                p_star = target_distributions[str(query_id)]
+                p_star = target_distributions[int(query_id)]
 
                 for k in self.cutoffs:
                     if len(ranked_list) < k:
@@ -1074,7 +1133,7 @@ class TRECFairnessEvaluator:
 
                     rows.append(
                         {
-                            "qid": qid,
+                            "qid": display_qid,
                             "query_id": str(query_id),
                             "k": k,
                             "D_KL_true": D_true,

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import warnings
 from pathlib import Path
+
+warnings.filterwarnings("ignore", message=r".*'where' used without 'out'.*")
 
 import dill as pickle
 import joblib
@@ -26,18 +29,6 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Dataset to evaluate.",
     )
-    parser.add_argument(
-        "--data-dir",
-        type=Path,
-        required=True,
-        help="Directory containing fairness data and/or processed files.",
-    )
-    parser.add_argument(
-        "--reports-dir",
-        type=Path,
-        default=None,
-        help="Directory where per-model evaluation reports will be saved.",
-    )
 
     # Adult args
     parser.add_argument("--dataset-id", type=str, default="adult")
@@ -54,12 +45,6 @@ def parse_args() -> argparse.Namespace:
         help="Build TREC fairness corpus artefacts before evaluation.",
     )
     parser.add_argument(
-        "--models-dir",
-        type=Path,
-        default=None,
-        help="Directory containing TREC fairness quantifier models.",
-    )
-    parser.add_argument(
         "--index-dir",
         type=Path,
         default=None,
@@ -74,10 +59,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_adult(args: argparse.Namespace) -> None:
-    data1 = pd.read_csv(args.data_dir / f"{args.dataset_id}_D1.csv")
-    data2 = pd.read_csv(args.data_dir / f"{args.dataset_id}_D2.csv")
-    data3 = pd.read_csv(args.data_dir / f"{args.dataset_id}_D3.csv")
+def run_adult(args: argparse.Namespace, dirs: dict[str, Path]) -> None:
+    data1 = pd.read_csv(dirs["data"] / f"{args.dataset_id}_D1.csv")
+    data2 = pd.read_csv(dirs["data"] / f"{args.dataset_id}_D2.csv")
+    data3 = pd.read_csv(dirs["data"] / f"{args.dataset_id}_D3.csv")
 
     evaluator = AdultFairnessEvaluator()
 
@@ -92,79 +77,76 @@ def run_adult(args: argparse.Namespace) -> None:
         repeats=args.repeats,
     )
 
-    output_path = args.reports_dir / f"{args.dataset_id}_fairness.pkl"
+    output_path = dirs["reports"] / f"{args.dataset_id}_fairness.pkl"
     evaluator.save_report(report, output_path)
     print(report.head())
 
 
-def run_trec(args: argparse.Namespace) -> None:
-    if args.build_trec_corpus:
+def run_trec(args: argparse.Namespace, dirs: dict[str, Path]) -> None:
+    if args.build_corpus:
         if args.index_dir is None:
             raise ValueError(
-                "--index-dir is required when --build-trec-corpus is used."
+                "--index-dir is required when --build-corpus is used."
             )
-
         builder = TRECFairnessCorpusBuilder()
-        train_df = pd.read_json(args.data_dir / "trec_train.json", lines=True)
+        train_df = pd.read_json(dirs["data"] / "trec_train.jsonl", lines=True)
         fair_train, nonrel_corpus = builder.build_train_nonrelevant_split(
             train_df
         )
 
         vectorizer = builder.vectorize(fair_train["text"].values)
-        joblib.dump(vectorizer, args.data_dir / "trec_fair_vectorizer.joblib")
+        joblib.dump(vectorizer, dirs["data"] / "trec_fair_vectorizer.joblib")
 
-        query_paths = sorted(args.data_dir.glob("trec_test_query_*.jsonl"))
+        query_paths = sorted(dirs["data"].glob("trec_test_query_*.jsonl"))
         queries_df, rel_docs = builder.build_query_table(
             query_paths=query_paths,
             vectorizer=vectorizer,
         )
         docs_df = builder.build_docs_table(rel_docs, nonrel_corpus)
 
-        builder.save_dataframe(queries_df, "trec_fair_queries.csv")
-        builder.save_dataframe(docs_df, "trec_fair_docs.csv")
-
-        ranked_lists = builder.build_bm25_ranked_lists(
-            docs=docs_df,
-            queries=queries_df,
-            index_dir=args.index_dir,
+        builder.save_dataframe(
+            queries_df, dirs["data"] / "trec_fair_queries.csv"
         )
-        ranked_lists_path = args.data_dir / "trec_fair_ranked_lists.pkl"
-        builder.save_pickle(ranked_lists, ranked_lists_path)
+        builder.save_dataframe(docs_df, dirs["data"] / "trec_fair_docs.csv")
+
+        builder.build_bm25_index(docs_df, args.index_dir, overwrite=False)
 
         print(f"Saved TREC fairness queries to {"trec_fair_queries.csv"}")
         print(f"Saved TREC fairness docs to {"trec_fair_docs.csv"}")
-        print(f"Saved TREC fairness ranked lists to {ranked_lists_path}")
+        print(f"Saved TREC fairness index to {args.index_dir}")
     else:
-        if not Path(args.data_dir / "trec_fair_ranked_lists.pkl").exists():
-            raise FileNotFoundError(
-                "TREC fairness ranked lists file not found. Run with --build-trec-corpus to build it."
+        queries_df = pd.read_csv(dirs["data"] / "trec_fair_queries.csv")
+
+        if not Path(dirs["data"] / "trec_fair_ranked_lists.pkl").exists():
+            ranked_lists = TRECFairnessCorpusBuilder.rank_bm25_index(
+                queries_df, args.index_dir, limit=10000
             )
+        else:
+            with open(dirs["data"] / "trec_fair_ranked_lists.pkl", "rb") as f:
+                ranked_lists = pickle.load(f)
 
-        with open(args.data_dir / "trec_fair_ranked_lists.pkl", "rb") as f:
-            ranked_lists = pickle.load(f)
-
-        docs_df = pd.read_csv(args.data_dir / "trec_fair_docs.csv")
-        vectorizer = joblib.load(args.data_dir / "trec_fair_vectorizer.joblib")
-        labels = np.load(
-            args.data_dir / "trec_fair_labels.npy", allow_pickle=True
+        docs_df = pd.read_csv(dirs["data"] / "trec_fair_docs.csv")
+        vectorizer = joblib.load(dirs["data"] / "trec_fair_vectorizer.joblib")
+        label_encoder = joblib.load(
+            dirs["data"] / "label_encoder_trec_train.joblib"
         )
 
-        evaluator = TRECFairnessEvaluator()
+        evaluator = TRECFairnessEvaluator(quantifiers=["CC", "PCC"])
         results = evaluator.evaluate_ranked_lists(
             ranked_lists=ranked_lists,
             docs=docs_df,
             vectorizer=vectorizer,
-            models_dir=args.models_dir,
-            labels=labels,
+            models_dir=dirs["models"],
+            data_dir=dirs["data"],
+            labels=label_encoder.classes_,
             experiment_name=args.experiment_name,
-            model_pattern="trec_fair_*.pkl",
         )
 
-        results_output = args.reports_dir / "trec_fairness_results.csv"
+        results_output = dirs["reports"] / "trec_fairness_results.csv"
         evaluator.save_report(results, results_output)
 
         rkl = evaluator.aggregate_rkl(results)
-        rkl_output = args.reports_dir / "trec_fairness_rkl.csv"
+        rkl_output = dirs["reports"] / "trec_fairness_rkl.csv"
         evaluator.save_report(rkl, rkl_output)
 
         summary = evaluator.generate_summary_table(rkl)
@@ -173,12 +155,17 @@ def run_trec(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = parse_args()
-    args.reports_dir.mkdir(parents=True, exist_ok=True)
+
+    project_root = Path(__file__).resolve().parents[1]
+    dirs = {
+        folder: project_root / folder
+        for folder in ["data", "models", "reports"]
+    }
 
     if args.dataset == "adult":
-        run_adult(args)
+        run_adult(args, dirs)
     else:
-        run_trec(args)
+        run_trec(args, dirs)
 
 
 if __name__ == "__main__":

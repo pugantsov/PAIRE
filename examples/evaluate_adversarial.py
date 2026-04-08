@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import warnings
 import multiprocessing as mp
 from pathlib import Path
+
+warnings.filterwarnings("ignore", message=r".*'where' used without 'out'.*")
 
 import pandas as pd
 
@@ -27,30 +30,6 @@ def parse_args() -> argparse.Namespace:
         choices=["adult", "trec"],
         required=True,
         help="Dataset to evaluate.",
-    )
-    parser.add_argument(
-        "--data-dir",
-        type=Path,
-        required=True,
-        help="Directory containing saved preprocessors and test data.",
-    )
-    parser.add_argument(
-        "--models-dir",
-        type=Path,
-        default=None,
-        help="Directory containing trained quantifier models.",
-    )
-    parser.add_argument(
-        "--reports-dir",
-        type=Path,
-        default=None,
-        help="Directory for optional per-run outputs.",
-    )
-    parser.add_argument(
-        "--test-file",
-        type=str,
-        default="adult_test.csv",
-        help="Adult test file. Defaults to adult_test.csv for Adult. Ignored for TREC.",
     )
     parser.add_argument(
         "--quantifiers",
@@ -83,12 +62,6 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated repetition budgets B, e.g. 1,10,100.",
     )
     parser.add_argument(
-        "--base-seed",
-        type=int,
-        default=0,
-        help="Base random seed.",
-    )
-    parser.add_argument(
         "--n-workers",
         type=int,
         default=max(mp.cpu_count() - 1, 1),
@@ -102,15 +75,16 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_test_data(args: argparse.Namespace) -> pd.DataFrame:
+def load_test_data(
+    args: argparse.Namespace, dirs: dict[str, Path]
+) -> pd.DataFrame:
     if args.dataset == "adult":
-        test_file = args.test_file or "adult_test.csv"
-        return pd.read_csv(args.data_dir / test_file)
+        return pd.read_csv(dirs["data"] / "adult_D3.csv")
 
-    query_paths = sorted(args.data_dir.glob("trec_test_query_*.jsonl"))
+    query_paths = sorted(dirs["data"].glob("trec_test_query_*.jsonl"))
     if not query_paths:
         raise FileNotFoundError(
-            f"No TREC query files found matching 'trec_test_query_*.jsonl' in {args.data_dir}"
+            f"No TREC query files found matching 'trec_test_query_*.jsonl' in {dirs["data"]}"
         )
 
     dfs = []
@@ -127,12 +101,18 @@ def load_test_data(args: argparse.Namespace) -> pd.DataFrame:
 def main() -> None:
     args = parse_args()
 
-    test_df = load_test_data(args)
+    project_root = Path(__file__).resolve().parents[1]
+    dirs = {
+        folder: project_root / folder
+        for folder in ["data", "models", "reports"]
+    }
+
+    test_df = load_test_data(args, dirs)
 
     runner = DifferencingAttackRunner(
-        data_dir=args.data_dir,
-        models_dir=args.models_dir,
-        reports_dir=args.reports_dir,
+        data_dir=dirs["data"],
+        models_dir=dirs["models"],
+        reports_dir=dirs["reports"],
         dataset_name=args.dataset,
     )
 
@@ -142,7 +122,6 @@ def main() -> None:
         n_runs=args.n_runs,
         background_sizes=args.background_sizes,
         vote_budgets=args.vote_budgets,
-        base_seed=args.base_seed,
         n_workers=args.n_workers,
         quantifiers=args.quantifiers,
         model_suffix=args.dataset,
@@ -151,7 +130,7 @@ def main() -> None:
 
     runner.save_results(
         results,
-        args.reports_dir / f"{args.dataset}_adversarial.pkl",
+        dirs["reports"] / f"{args.dataset}_adversarial.pkl",
     )
 
     summary = runner.summarize(results)
