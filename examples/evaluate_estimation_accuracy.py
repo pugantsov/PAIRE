@@ -74,7 +74,7 @@ def main() -> None:
 
     summary = evaluator.generate_summary_table(
         reports,
-        model_order=DEFAULT_QUANTIFIERS[:1],
+        model_order=DEFAULT_QUANTIFIERS,
         metrics=["ae", "rae"],
     )
     print(summary)

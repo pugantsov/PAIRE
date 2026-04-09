@@ -67,7 +67,7 @@ def main() -> None:
     train = load_training_data(args.dataset, dirs["data"])
 
     preprocessor = build_preprocessor(args.dataset)
-    trainer = QuantifierTrainer(quantifiers=["CC"])
+    trainer = QuantifierTrainer()
 
     params = trainer.load_parameters(
         dirs["models"] / f"params_{args.dataset}.json"

@@ -67,7 +67,7 @@ def main() -> None:
     train = load_training_data(args.dataset, dirs["data"])
 
     preprocessor = build_preprocessor(args.dataset)
-    tuner = QuantifierHyperparameterTuner(args.dataset, quantifiers=["CC"])
+    tuner = QuantifierHyperparameterTuner(args.dataset)
 
     best_parameters = tuner.tune(train_df=train, preprocessor=preprocessor)
     tuner.save_best_parameters(
