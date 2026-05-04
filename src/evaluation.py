@@ -128,6 +128,32 @@ class QuantifierEvaluator:
         y = label_encoder.transform(test_df[target_col].astype(str).to_numpy())
         return qp.data.LabelledCollection(X, y.tolist())
 
+    def _filter_model_paths(
+        self,
+        models_dir: Path,
+        quantifiers: list[str] | None = None,
+    ) -> list[Path]:
+        """
+        Return the trained-model paths in `models_dir` for `self.model_suffix`,
+        optionally restricted to the listed quantifier ids.
+
+        Raises ValueError if any requested quantifier does not have a model
+        file.
+        """
+        all_paths = sorted(models_dir.glob(f"*_{self.model_suffix}.pkl"))
+        if not quantifiers:
+            return all_paths
+
+        allowed = set(quantifiers)
+        filtered = [p for p in all_paths if p.stem.split("_")[0] in allowed]
+        missing = allowed - {p.stem.split("_")[0] for p in filtered}
+        if missing:
+            raise ValueError(
+                f"Missing model files for quantifiers {sorted(missing)} "
+                f"in {models_dir}."
+            )
+        return filtered
+
     def evaluate_adult_models(
         self,
         test_df: pd.DataFrame,
@@ -135,6 +161,7 @@ class QuantifierEvaluator:
         reports_dir: Path | str,
         preprocessor_suffix: str = "adult_train",
         target_col: str = "sex",
+        quantifiers: list[str] | None = None,
     ) -> None:
         models_dir = Path(models_dir)
         if not models_dir.exists():
@@ -159,7 +186,7 @@ class QuantifierEvaluator:
         qp.environ["SAMPLE_SIZE"] = len(dataset)
         protocol = qp.protocol.APP(dataset, **self.protocol_config)
 
-        model_paths = sorted(models_dir.glob(f"*_{self.model_suffix}.pkl"))
+        model_paths = self._filter_model_paths(models_dir, quantifiers)
         for model_path in (model_iter := tqdm(model_paths, desc="Models")):
             qid = model_path.stem.split("_")[0]
             model_iter.set_description(f"Evaluating {qid}")
@@ -252,6 +279,7 @@ class QuantifierEvaluator:
         n_workers: int = 1,
         text_col: str = "text",
         target_col: str = "region",
+        quantifiers: list[str] | None = None,
     ) -> None:
         models_dir = Path(models_dir)
         if not models_dir.exists():
@@ -266,7 +294,7 @@ class QuantifierEvaluator:
             suffix=preprocessor_suffix
         )
 
-        model_paths = sorted(models_dir.glob(f"*_{self.model_suffix}.pkl"))
+        model_paths = self._filter_model_paths(models_dir, quantifiers)
         query_paths = sorted(self.data_dir.glob(queries_pattern))
 
         if not query_paths:
@@ -339,6 +367,7 @@ class QuantifierEvaluator:
         preprocessor_suffix: str | None = None,
         n_workers: int = 1,
         queries_pattern: str = "trec_test_query_*.jsonl",
+        quantifiers: list[str] | None = None,
     ) -> None:
         if self.dataset == "adult":
             if test_df is None:
@@ -350,6 +379,7 @@ class QuantifierEvaluator:
                 models_dir=models_dir,
                 reports_dir=reports_dir,
                 preprocessor_suffix=preprocessor_suffix or "adult_train",
+                quantifiers=quantifiers,
             )
         else:
             self.evaluate_trec_models(
@@ -358,6 +388,7 @@ class QuantifierEvaluator:
                 queries_pattern=queries_pattern,
                 preprocessor_suffix=preprocessor_suffix or "trec_train",
                 n_workers=n_workers,
+                quantifiers=quantifiers,
             )
 
     @staticmethod
@@ -433,7 +464,7 @@ class AdultFairnessEvaluator:
     def __init__(
         self,
         quantifiers: list[str] | None = None,
-        alpha: float = 0.05,
+        alpha: float = 0.5,
         sensitive_cardinality: int = 2,
         random_state: int = 0,
     ):
@@ -451,50 +482,58 @@ class AdultFairnessEvaluator:
         max_prev: float = 0.1,
         sample_size: int = 5000,
         repeats: int = 10,
-        random_state: int = 0,
+        random_state: int | None = None,
     ):
         """
-        Manual sampling protocol over a binary control label.
+        Manual sampling protocol over a binary joint-control label.
+
+        This intentionally mirrors the original paper notebook:
+        - uses NumPy's legacy RNG via np.random.seed
+        - samples without replacement
+        - skips prevalence/repeat settings with insufficient examples
+        - yields QuaPy's sampling_from_index(...).Xp
         """
-        rng = np.random.default_rng(self.random_state)
+        if random_state is None:
+            random_state = self.random_state
 
-        y = np.asarray(dataset.y)
-        X = np.asarray(dataset.X)
+        prevalences = np.linspace(0, max_prev, n_prevalences)
 
-        idx_neg = np.where(y == 0)[0]
-        idx_pos = np.where(y == 1)[0]
+        s1_indices = np.where(dataset.y == 1)[0]
+        s2_indices = np.where(dataset.y == 0)[0]
 
-        prev_grid = np.linspace(0.0, max_prev, n_prevalences)
+        np.random.seed(random_state)
 
-        for p_pos in prev_grid:
-            n_pos = int(round(sample_size * p_pos))
-            n_neg = sample_size - n_pos
+        for prev in prevalences:
+            for r in range(repeats):
+                n_s1 = int(np.round(sample_size * prev))
+                n_s2 = sample_size - n_s1
 
-            if len(idx_pos) == 0 or len(idx_neg) == 0:
-                continue
+                if n_s1 > len(s1_indices) or n_s2 > len(s2_indices):
+                    print(
+                        f"Skipping prev={prev:.2f} (r={r}) due to insufficient samples"
+                    )
+                    continue
 
-            for _ in range(repeats):
-                sample_pos = rng.choice(
-                    idx_pos,
-                    size=n_pos,
-                    replace=len(idx_pos) < n_pos,
-                )
-                sample_neg = rng.choice(
-                    idx_neg,
-                    size=n_neg,
-                    replace=len(idx_neg) < n_neg,
-                )
+                if n_s1 > 0:
+                    s1_sample = np.random.choice(
+                        s1_indices,
+                        n_s1,
+                        replace=False,
+                    )
+                else:
+                    s1_sample = np.array([], dtype=int)
 
-                indices = np.concatenate([sample_neg, sample_pos])
-                rng.shuffle(indices)
-
-                sample_X = X[indices]
-                prev = np.array(
-                    [n_neg / sample_size, n_pos / sample_size],
-                    dtype=float,
+                s2_sample = np.random.choice(
+                    s2_indices,
+                    n_s2,
+                    replace=False,
                 )
 
-                yield indices, (sample_X, prev)
+                indices = np.concatenate([s1_sample, s2_sample])
+                np.random.shuffle(indices)
+
+                sample = dataset.sampling_from_index(indices)
+                yield indices, sample.Xp
 
     def _fit_preprocessors(
         self,
@@ -745,7 +784,7 @@ class AdultFairnessEvaluator:
                     + self.alpha * self.sensitive_cardinality
                 )
 
-                tpr_est = []
+                eo_est = []
                 for s in [0, 1]:
                     denom = pS_given_ypos[s]
                     val = (
@@ -753,23 +792,22 @@ class AdultFairnessEvaluator:
                         if denom > 0
                         else 0.0
                     )
-                    tpr_est.append(float(np.clip(val, 0.0, 1.0)))
+                    eo_est.append(float(np.clip(val, 0.0, 1.0)))
 
-                tpr_true = []
+                eo_true = []
                 for s in [0, 1]:
                     mask = (s_true == s) & (y_true == 1)
-                    tpr_true.append(
+                    eo_true.append(
                         (D3_pred[mask] == 1).mean() if mask.sum() > 0 else 0.0
                     )
 
-                tpr_mcfe = (
-                    abs(tpr_est[0] - tpr_true[0])
-                    + abs(tpr_est[1] - tpr_true[1])
+                eo_mcfe = (
+                    abs(eo_est[0] - eo_true[0]) + abs(eo_est[1] - eo_true[1])
                 ) / 2
 
-                tpr_delta_true = tpr_true[1] - tpr_true[0]
-                tpr_delta_est = tpr_est[1] - tpr_est[0]
-                tpr_delta_err = tpr_delta_est - tpr_delta_true
+                eo_delta_true = eo_true[1] - eo_true[0]
+                eo_delta_est = eo_est[1] - eo_est[0]
+                eo_delta_err = eo_delta_est - eo_delta_true
 
                 rows.append(
                     {
@@ -780,10 +818,10 @@ class AdultFairnessEvaluator:
                         "dd_est": dd_est,
                         "dd_e": dd_err,
                         "dd_mcfe": dd_mcfe,
-                        "tpr_delta_true": tpr_delta_true,
-                        "tpr_delta_est": tpr_delta_est,
-                        "tpr_delta_e": tpr_delta_err,
-                        "tpr_mcfe": tpr_mcfe,
+                        "eo_delta_true": eo_delta_true,
+                        "eo_delta_est": eo_delta_est,
+                        "eo_delta_e": eo_delta_err,
+                        "eo_mcfe": eo_mcfe,
                     }
                 )
 
@@ -795,6 +833,29 @@ class AdultFairnessEvaluator:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with output_path.open("wb") as f:
             pickle.dump(report, f)
+
+    @staticmethod
+    def generate_summary_table(
+        report: pd.DataFrame,
+        model_order: list[str] | None = None,
+        metrics: list[str] | None = None,
+    ) -> pd.DataFrame:
+        metrics = metrics or ["dd_mcfe", "eo_mcfe"]
+
+        table = report.groupby(["quantifier"])[metrics].agg(["mean", "std"])
+        table.columns = [
+            f"{col.upper()}_{stat}" for col, stat in table.columns
+        ]
+
+        if model_order is not None:
+            missing = set(model_order) - set(table.index)
+            if missing:
+                raise ValueError(
+                    f"The following models in model_order are missing from the data: {missing}"
+                )
+            table = table.reindex(model_order)
+
+        return table
 
 
 class TRECFairnessCorpusBuilder:

@@ -11,6 +11,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
+from src.models import DEFAULT_QUANTIFIERS
 from src.evaluation import (
     AdultFairnessEvaluator,
     TRECFairnessCorpusBuilder,
@@ -59,27 +60,78 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_adult(args: argparse.Namespace, dirs: dict[str, Path]) -> None:
-    data1 = pd.read_csv(dirs["data"] / f"{args.dataset_id}_D1.csv")
-    data2 = pd.read_csv(dirs["data"] / f"{args.dataset_id}_D2.csv")
-    data3 = pd.read_csv(dirs["data"] / f"{args.dataset_id}_D3.csv")
+def run_adult_eval(
+    data_dir: Path | str,
+    reports_dir: Path | str,
+    dataset_id: str = "adult",
+    classifier_name: str = "lr",
+    n_prevalences: int = 11,
+    max_prev: float = 0.1,
+    sample_size: int = 5000,
+    repeats: int = 10,
+    quantifiers: list[str] | None = None,
+    random_state: int = 0,
+    print_summary: bool = True,
+) -> Path:
+    """
+    Programmatic entry point for the Adult fairness evaluation.
 
-    evaluator = AdultFairnessEvaluator()
+    Returns the path to the saved report.
+    """
+    data_dir = Path(data_dir)
+    reports_dir = Path(reports_dir)
+
+    if not data_dir.exists():
+        raise FileNotFoundError(f"Data directory {data_dir} does not exist.")
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    data1 = pd.read_csv(data_dir / f"{dataset_id}_D1.csv")
+    data2 = pd.read_csv(data_dir / f"{dataset_id}_D2.csv")
+    data3 = pd.read_csv(data_dir / f"{dataset_id}_D3.csv")
+
+    evaluator = AdultFairnessEvaluator(
+        quantifiers=quantifiers,
+        random_state=random_state,
+    )
 
     report = evaluator.evaluate(
         data1=data1,
         data2=data2,
         data3=data3,
+        classifier_name=classifier_name,
+        n_prevalences=n_prevalences,
+        max_prev=max_prev,
+        sample_size=sample_size,
+        repeats=repeats,
+    )
+
+    output_path = reports_dir / f"{dataset_id}_fairness.pkl"
+    evaluator.save_report(report, output_path)
+
+    model_order = list(quantifiers) if quantifiers else DEFAULT_QUANTIFIERS
+    summary = evaluator.generate_summary_table(
+        report,
+        model_order=model_order,
+        metrics=["dd_mcfe", "eo_mcfe"],
+    )
+
+    if print_summary:
+        print(summary)
+
+    return output_path
+
+
+def run_adult(args: argparse.Namespace, dirs: dict[str, Path]) -> None:
+    run_adult_eval(
+        data_dir=dirs["data"],
+        reports_dir=dirs["reports"],
+        dataset_id=args.dataset_id,
         classifier_name=args.classifier,
         n_prevalences=args.n_prevalences,
         max_prev=args.max_prev,
         sample_size=args.sample_size,
         repeats=args.repeats,
     )
-
-    output_path = dirs["reports"] / f"{args.dataset_id}_fairness.pkl"
-    evaluator.save_report(report, output_path)
-    print(report.head())
 
 
 def run_trec(args: argparse.Namespace, dirs: dict[str, Path]) -> None:

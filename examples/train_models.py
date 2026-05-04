@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import warnings
 from pathlib import Path
+from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from src.models import (
@@ -58,28 +60,59 @@ def create_dirs(project_root: Path) -> dict[str, Path]:
     return dirs
 
 
+def run(
+    dataset: str,
+    data_dir: Path | str,
+    models_dir: Path | str,
+    parameters: dict[str, dict[str, Any]],
+    quantifiers: list[str] | None = None,
+    random_seed: int = 0,
+    save_preprocessor: bool = True,
+) -> None:
+    data_dir = Path(data_dir)
+    models_dir = Path(models_dir)
+
+    if not data_dir.exists():
+        raise FileNotFoundError(f"Data directory {data_dir} does not exist.")
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    np.random.seed(random_seed)
+
+    train_df = load_training_data(dataset, data_dir)
+    preprocessor = build_preprocessor(dataset)
+
+    quantifiers = list(quantifiers) if quantifiers else list(parameters.keys())
+    missing = [qid for qid in quantifiers if qid not in parameters]
+    if missing:
+        raise ValueError(f"Missing parameters for quantifiers: {missing}")
+
+    trainer = QuantifierTrainer(quantifiers=quantifiers)
+    trainer.train_and_save(
+        train_df=train_df,
+        params=parameters,
+        preprocessor=preprocessor,
+        data_dir=data_dir,
+        model_dir=models_dir,
+        model_suffix=dataset,
+        save_preprocessor=save_preprocessor,
+    )
+
+
 def main() -> None:
     args = parse_args()
 
     project_root = Path(__file__).resolve().parents[1]
     dirs = create_dirs(project_root)
 
-    train = load_training_data(args.dataset, dirs["data"])
-
-    preprocessor = build_preprocessor(args.dataset)
-    trainer = QuantifierTrainer()
-
-    params = trainer.load_parameters(
+    parameters = QuantifierTrainer.load_parameters(
         dirs["models"] / f"params_{args.dataset}.json"
     )
-    trainer.train_and_save(
-        train_df=train,
-        params=params,
-        preprocessor=preprocessor,
+
+    run(
+        dataset=args.dataset,
         data_dir=dirs["data"],
-        model_dir=dirs["models"],
-        model_suffix=args.dataset,
-        save_preprocessor=True,
+        models_dir=dirs["models"],
+        parameters=parameters,
     )
 
 

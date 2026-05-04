@@ -4,6 +4,7 @@ import argparse
 import warnings
 import multiprocessing as mp
 from pathlib import Path
+from typing import Sequence
 
 warnings.filterwarnings("ignore", message=r".*'where' used without 'out'.*")
 
@@ -75,16 +76,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_test_data(
-    args: argparse.Namespace, dirs: dict[str, Path]
-) -> pd.DataFrame:
-    if args.dataset == "adult":
-        return pd.read_csv(dirs["data"] / "adult_D3.csv")
+def load_test_data(dataset: str, data_dir: Path) -> pd.DataFrame:
+    if dataset == "adult":
+        return pd.read_csv(data_dir / "adult_D3.csv")
 
-    query_paths = sorted(dirs["data"].glob("trec_test_query_*.jsonl"))
+    query_paths = sorted(data_dir.glob("trec_test_query_*.jsonl"))
     if not query_paths:
         raise FileNotFoundError(
-            f"No TREC query files found matching 'trec_test_query_*.jsonl' in {dirs["data"]}"
+            f"No TREC query files found matching 'trec_test_query_*.jsonl' "
+            f"in {data_dir}"
         )
 
     dfs = []
@@ -98,6 +98,71 @@ def load_test_data(
     return pd.concat(dfs, ignore_index=True)
 
 
+def run(
+    dataset: str,
+    data_dir: Path | str,
+    models_dir: Path | str,
+    reports_dir: Path | str,
+    quantifiers: Sequence[str] | None = None,
+    n_attack_instances: int = 500,
+    n_runs: int = 5,
+    background_sizes: Sequence[int] = (1, 10, 100),
+    vote_budgets: Sequence[int] = (1, 10, 100),
+    base_seed: int = 0,
+    n_workers: int = 1,
+    save_individual_runs: bool = False,
+    print_summary: bool = True,
+) -> tuple[pd.DataFrame, Path]:
+    """
+    Programmatic entry point for the differencing-attack evaluation.
+
+    Returns the full results DataFrame and the path of the saved pickle.
+    """
+    data_dir = Path(data_dir)
+    models_dir = Path(models_dir)
+    reports_dir = Path(reports_dir)
+
+    if not data_dir.exists():
+        raise FileNotFoundError(
+            f"Data directory {data_dir} does not exist."
+        )
+    if not models_dir.exists():
+        raise FileNotFoundError(
+            f"Models directory {models_dir} does not exist."
+        )
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    test_df = load_test_data(dataset, data_dir)
+
+    runner = DifferencingAttackRunner(
+        data_dir=data_dir,
+        models_dir=models_dir,
+        reports_dir=reports_dir,
+        dataset_name=dataset,
+    )
+
+    results = runner.run(
+        test_df=test_df,
+        n_attack_instances=n_attack_instances,
+        n_runs=n_runs,
+        background_sizes=list(background_sizes),
+        vote_budgets=list(vote_budgets),
+        base_seed=base_seed,
+        n_workers=n_workers,
+        quantifiers=list(quantifiers) if quantifiers else None,
+        model_suffix=dataset,
+        save_individual_runs=save_individual_runs,
+    )
+
+    output_path = reports_dir / f"{dataset}_adversarial.pkl"
+    runner.save_results(results, output_path)
+
+    if print_summary:
+        print(runner.summarize(results))
+
+    return results, output_path
+
+
 def main() -> None:
     args = parse_args()
 
@@ -107,34 +172,19 @@ def main() -> None:
         for folder in ["data", "models", "reports"]
     }
 
-    test_df = load_test_data(args, dirs)
-
-    runner = DifferencingAttackRunner(
+    run(
+        dataset=args.dataset,
         data_dir=dirs["data"],
         models_dir=dirs["models"],
         reports_dir=dirs["reports"],
-        dataset_name=args.dataset,
-    )
-
-    results = runner.run(
-        test_df=test_df,
+        quantifiers=args.quantifiers,
         n_attack_instances=args.n_attack_instances,
         n_runs=args.n_runs,
         background_sizes=args.background_sizes,
         vote_budgets=args.vote_budgets,
         n_workers=args.n_workers,
-        quantifiers=args.quantifiers,
-        model_suffix=args.dataset,
         save_individual_runs=args.save_individual_runs,
     )
-
-    runner.save_results(
-        results,
-        dirs["reports"] / f"{args.dataset}_adversarial.pkl",
-    )
-
-    summary = runner.summarize(results)
-    print(summary)
 
 
 if __name__ == "__main__":

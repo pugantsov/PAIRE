@@ -1,0 +1,66 @@
+# configs/adult_paper.yaml
+
+dataset: adult
+random_seed: 0
+
+paths:
+  data_dir: data/adult
+  models_dir: models/paper/adult
+  reports_dir: reports/paper/adult
+
+quantifiers:
+  - CC
+  - PCC
+  - PACC
+  - EMQ
+  - KDEyML
+
+training:
+  parameters:
+    CC:
+      classifier__C: 10.0
+      classifier__max_iter: 100
+      classifier__solver: saga
+      classifier__l1_ratio: 0
+
+    PCC:
+      classifier__C: 1000.0
+      classifier__max_iter: 100
+      classifier__solver: saga
+      classifier__l1_ratio: 0
+
+    PACC:
+      classifier__C: 0.001
+      classifier__max_iter: 100
+      classifier__solver: saga
+      classifier__l1_ratio: 0
+
+    EMQ:
+      classifier__C: 0.001
+      classifier__max_iter: 100
+      classifier__solver: saga
+      classifier__l1_ratio: 0
+
+    KDEyML:
+      classifier__C: 100.0
+      classifier__max_iter: 100
+      classifier__solver: saga
+      classifier__l1_ratio: 0
+      bandwidth: 0.17
+      random_state: 0
+
+estimation:
+  protocol: APP
+  sample_size: 500
+  repeats: 10
+
+fairness:
+  n_prevalences: 11
+  max_prev: 0.1
+  sample_size: 5000
+  repeats: 10
+
+adversarial:
+  n_attack_instances: 500
+  background_sizes: [1, 10, 100]
+  vote_budgets: [1, 10, 100]

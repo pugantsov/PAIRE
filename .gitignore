@@ -1,4 +1,28 @@
-/data/
-/models/
-/reports/
+# Data artefacts
+/data/adult/*
+/data/trec/*
+!/data/adult/.gitkeep
+!/data/trec/.gitkeep
+
+# Model artefacts
+/models/adult/*
+/models/trec/*
+/models/paper/adult/*
+/models/paper/trec/*
+!/models/adult/.gitkeep
+!/models/trec/.gitkeep
+!/models/paper/adult/.gitkeep
+!/models/paper/trec/.gitkeep
+
+# Report artefacts
+/reports/adult/*
+/reports/trec/*
+/reports/paper/adult/*
+/reports/paper/trec/*
+!/reports/adult/.gitkeep
+!/reports/trec/.gitkeep
+!/reports/paper/adult/.gitkeep
+!/reports/paper/trec/.gitkeep
+
+# Python cache
 **/__pycache__/
