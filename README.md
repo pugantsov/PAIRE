@@ -26,7 +26,8 @@ The two modes share the same underlying source code in `src/` (the reproducibili
 ```
 paire/
 ├── configs/                       # Frozen YAML configs for the reproducibility drivers
-│   └── adult_paper.yaml
+│   ├── adult_paper.yaml
+│   └── trec_paper.yaml
 ├── data/                          # Input data (.indices, CSVs, JSONL, fitted preprocessors)
 │   ├── adult/
 │   └── trec/
@@ -57,7 +58,8 @@ paire/
 │   ├── evaluate_fairness.py
 │   └── evaluate_adversarial.py
 └── reproduce/                     # Paper-based entry points (reproducibility)
-    └── run_adult.py
+    ├── run_adult.py
+    └── run_trec.py
 ```
 
 ##  Requirements
@@ -91,6 +93,8 @@ python -m examples.load_data --dataset adult
 
 ## Reproducibility mode
 
+### Adult
+
 The fastest way to reproduce the paper's Adult results is:
 
 ```bash
@@ -116,6 +120,36 @@ python -m reproduce.run_adult \
     [--skip-fairness]                     # skip the fairness stage
     [--skip-adversarial]                  # skip the differencing-attack stage
     [--adversarial-workers N]             # parallel workers for the differencing attack (default: cpu - 1)
+```
+
+### TREC
+
+Once the TREC files are in place (see *Data preparation*), reproduce the paper's TREC results with:
+
+```bash
+python -m reproduce.run_trec
+```
+
+This single command:
+
+1. checks that `trec_train.jsonl` and the per-query `trec_test_query_*.jsonl` files are present in `data/trec/`;
+2. trains the quantifiers listed in `configs/trec_paper.yaml` with frozen hyperparameters used in the paper;
+3. runs the estimation quality (NPP protocol), fairness (ranked-list diversity), and differencing-attack stages with the protocol settings from the YAML;
+4. writes models to `models/paper/trec/` and reports to `reports/paper/trec/`.
+
+The fairness stage builds the BM25 corpus artefacts (fair-train TF-IDF vectorizer, per-query term queries, combined docs table, and a Whoosh index under `paths.index_dir`) on first run and caches them for subsequent runs.
+
+```
+python -m reproduce.run_trec \
+    [--config configs/trec_paper.yaml] \
+    [--retrain]                           # force retraining even if model files exist
+    [--skip-training]                     # skip the training stage
+    [--skip-estimation]                   # skip the estimation-quality stage
+    [--skip-fairness]                     # skip the fairness stage
+    [--skip-adversarial]                  # skip the differencing-attack stage
+    [--estimation-workers N]              # parallel workers for per-query estimation (default: cpu // 2)
+    [--adversarial-workers N]             # parallel workers for the differencing attack (default: cpu - 1)
+    [--rebuild-fairness-corpus]           # rebuild the BM25 corpus/index and ranked lists
 ```
 
 ## Benchmark mode

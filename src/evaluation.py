@@ -1228,12 +1228,17 @@ class TRECFairnessEvaluator:
 
     @staticmethod
     def generate_summary_table(rkl_df: pd.DataFrame) -> pd.DataFrame:
+        model_order = ["TE", "WE", "PACC", "EMQ", "KDEyML"]
         summary = (
             rkl_df.groupby(["qid"], as_index=False)["MRFE"]
             .agg(["mean", "std"])
-            .reset_index()
+            .reset_index(drop=True)
         )
-        return summary.round(3).set_index("qid")
+        summary["qid"] = pd.Categorical(
+            summary["qid"], categories=model_order, ordered=True
+        )
+        summary = summary.sort_values("qid").round(3).set_index("qid")
+        return summary
 
     @staticmethod
     def save_report(report: pd.DataFrame, output_path: Path | str) -> None:

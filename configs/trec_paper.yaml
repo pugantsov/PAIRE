@@ -1,0 +1,73 @@
+# configs/trec_paper.yaml
+
+dataset: trec
+random_seed: 0
+
+paths:
+  data_dir: data/trec
+  models_dir: models/paper/trec
+  reports_dir: reports/paper/trec
+  index_dir: data/trec/index
+
+quantifiers:
+  - CC
+  - PCC
+  - PACC
+  - EMQ
+  - KDEyML
+
+training:
+  parameters:
+    CC:
+      classifier__C: 100.0
+      classifier__max_iter: 100
+      classifier__solver: saga
+      classifier__l1_ratio: 0
+
+    PCC:
+      classifier__C: 1000.0
+      classifier__max_iter: 100
+      classifier__solver: saga
+      classifier__l1_ratio: 0
+
+    PACC:
+      classifier__C: 1000.0
+      classifier__max_iter: 100
+      classifier__solver: saga
+      classifier__l1_ratio: 0
+
+    EMQ:
+      classifier__C: 1000.0
+      classifier__max_iter: 100
+      classifier__solver: saga
+      classifier__l1_ratio: 0
+
+    KDEyML:
+      classifier__C: 10.0
+      classifier__max_iter: 100
+      classifier__solver: saga
+      classifier__l1_ratio: 0
+      bandwidth: 0.08
+      random_state: 0
+
+estimation:
+  protocol: NPP
+  sample_size: 500
+  repeats: 1000
+
+fairness:
+  query_top_n_terms: 100
+  rank_lim: 10000
+  cutoffs: [50, 100, 500, 1000]
+  split:
+    test_size: 0.9
+    random_state: 0
+  bm25:
+    B: 0.75
+    K1: 1.2
+
+adversarial:
+  n_runs: 5
+  n_attack_instances: 500
+  background_sizes: [1, 10, 100]
+  vote_budgets: [1, 10, 20]

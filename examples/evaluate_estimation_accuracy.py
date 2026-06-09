@@ -54,9 +54,7 @@ def run(
     reports_dir = Path(reports_dir)
 
     if not data_dir.exists():
-        raise FileNotFoundError(
-            f"Data directory {data_dir} does not exist."
-        )
+        raise FileNotFoundError(f"Data directory {data_dir} does not exist.")
     if not models_dir.exists():
         raise FileNotFoundError(
             f"Models directory {models_dir} does not exist."
@@ -97,7 +95,8 @@ def run(
         )
 
     reports = evaluator.load_reports(reports_dir, model_suffix=dataset)
-    reports = evaluator.filter_non_degenerate_prevalences(reports)
+    if dataset == "adult":
+        reports = evaluator.filter_non_degenerate_prevalences(reports)
 
     model_order = list(quantifiers) if quantifiers else DEFAULT_QUANTIFIERS
     summary = evaluator.generate_summary_table(
