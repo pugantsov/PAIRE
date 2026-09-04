@@ -253,4 +253,6 @@ In fairness evaluation outputs, CC and PCC are displayed as TE (Threshold Estima
 
 ## Citation
 
-*To be added upon publication.*
+If you use PAIRE, its evaluation protocols, or the accompanying code in your work, please cite:
+
+> Pugantsov, A., Fabris, A., Susto, G. A., & Moreo, A. (2027). [PAIRE: A testbed for measuring dataset diversity and model fairness under limited sensitive information](https://doi.org/10.1016/j.ipm.2026.105095). *Information Processing & Management, 64* (2, Part A), 105095.
